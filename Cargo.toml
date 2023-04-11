@@ -14,3 +14,10 @@ exclude = [
 # commands like `cargo run` will run the CLI binary by default.
 # See: https://doc.rust-lang.org/cargo/reference/workspaces.html#package-selection
 default-members = [ "cli" ]
+
+[patch.crates-io]
+wasi-common = { path = "/home/geekbeast/repos/wasmtime/crates/wasi-common" }
+wasmtime = { path = "/home/geekbeast/repos/wasmtime/crates/wasmtime" }
+wasmtime-wasi = { path = "/home/geekbeast/repos/wasmtime/crates/wasi" }
+wasmtime-wasi-nn = { path = "/home/geekbeast/repos/wasmtime/crates/wasi-nn" }
+wiggle = { path = "/home/geekbeast/repos/wasmtime/crates/wiggle" }
