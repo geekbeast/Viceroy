@@ -56,6 +56,7 @@ wasmtime-wasi = "^8.0.0"
 wasmtime-wasi-nn = "^8.0.0"
 webpki = "^0.21.0"
 wiggle = "^8.0.0"
+rust-bert = "0.20.0"
 
 
 [dev-dependencies]

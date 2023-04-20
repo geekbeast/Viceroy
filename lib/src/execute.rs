@@ -1,6 +1,9 @@
 //! Guest code execution.
 
 use std::net::Ipv4Addr;
+use std::sync::Mutex;
+use rust_bert::pipelines::conversation::{ConversationManager, ConversationModel};
+use rust_bert::pipelines::question_answering::QuestionAnsweringModel;
 
 use {
     crate::{
@@ -61,6 +64,9 @@ pub struct ExecuteCtx {
     object_store: Arc<ObjectStores>,
     /// The secret stores for this execution.
     secret_stores: Arc<SecretStores>,
+    c_model: Arc<Mutex<ConversationModel>>,
+    c_mgr: Arc<Mutex<ConversationManager>>,
+    qam: Arc<Mutex<QuestionAnsweringModel>>,
 }
 
 impl ExecuteCtx {
@@ -90,6 +96,9 @@ impl ExecuteCtx {
             next_req_id: Arc::new(AtomicU64::new(0)),
             object_store: Arc::new(ObjectStores::new()),
             secret_stores: Arc::new(SecretStores::new()),
+            qam: Arc::new(Mutex::new(QuestionAnsweringModel::new(Default::default()).unwrap())),
+            c_mgr: Arc::new(Mutex::new(ConversationManager::new())),
+            c_model: Arc::new(Mutex::new(ConversationModel::new(Default::default()).unwrap())),
         })
     }
 
@@ -122,6 +131,21 @@ impl ExecuteCtx {
             geolocation: Arc::new(geolocation),
             ..self
         }
+    }
+
+    /// Gets the Question Answering Model
+    pub fn question_answering_model(&self) -> Arc<Mutex<QuestionAnsweringModel>> {
+        self.qam.clone()
+    }
+
+    /// Gets the Question Answering Model
+    pub fn conversation_manager(&self) -> Arc<Mutex<ConversationManager>> {
+        self.c_mgr.clone()
+    }
+
+    /// Gets the Question Answering Model
+    pub fn conversation_model(&self) -> Arc<Mutex<ConversationModel>> {
+        self.c_model.clone()
     }
 
     /// Get the dictionaries for this execution context.
@@ -243,7 +267,7 @@ impl ExecuteCtx {
                         _e.to_string()
                     );
                     #[allow(unused_mut)]
-                    let mut response = Response::builder()
+                        let mut response = Response::builder()
                         .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                         .body(Body::empty())
                         .unwrap();

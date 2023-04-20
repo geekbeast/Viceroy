@@ -48,7 +48,10 @@ pub(crate) fn create_store(
     session: Session,
 ) -> Result<Store<WasmCtx>, anyhow::Error> {
     let wasi = make_wasi_ctx(ctx, &session).context("creating Wasi context")?;
-    let wasi_nn = WasiNnCtx::new().unwrap();
+    let wasi_nn = WasiNnCtx::new_with_llm(
+        ctx.question_answering_model(),
+        ctx.conversation_manager(),
+        ctx.conversation_model()).unwrap();
     let wasm_ctx = WasmCtx {
         wasi,
         wasi_nn,

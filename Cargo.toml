@@ -16,8 +16,8 @@ exclude = [
 default-members = [ "cli" ]
 
 [patch.crates-io]
-wasi-common = { path = "/home/geekbeast/repos/wasmtime/crates/wasi-common" }
-wasmtime = { path = "/home/geekbeast/repos/wasmtime/crates/wasmtime" }
-wasmtime-wasi = { path = "/home/geekbeast/repos/wasmtime/crates/wasi" }
-wasmtime-wasi-nn = { path = "/home/geekbeast/repos/wasmtime/crates/wasi-nn" }
-wiggle = { path = "/home/geekbeast/repos/wasmtime/crates/wiggle" }
+wasi-common = { path = "/Users/geekbeast/repos/wasmtime/crates/wasi-common" }
+wasmtime = { path = "/Users/geekbeast/repos/wasmtime/crates/wasmtime" }
+wasmtime-wasi = { path = "/Users/geekbeast/repos/wasmtime/crates/wasi" }
+wasmtime-wasi-nn = { path = "/Users/geekbeast/repos/wasmtime/crates/wasi-nn" }
+wiggle = { path = "/Users/geekbeast/repos/wasmtime/crates/wiggle" }
