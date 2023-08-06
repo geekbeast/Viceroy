@@ -1,5 +1,55 @@
 ## Unreleased
 
+## 0.6.1 (2023-08-03)
+
+- Support the new config store hostcalls. ([#296](https://github.com/fastly/Viceroy/pull/296))
+- Bump to wasmtime-11.0.1 ([#295](https://github.com/fastly/Viceroy/pull/295))
+- Unblock Secret::from_bytes test by upgrading the fastly crate dependency. ([#294](https://github.com/fastly/Viceroy/pull/294))
+- Map Error::UnknownBackend to FastlyStatus::Inval ([#293](https://github.com/fastly/Viceroy/pull/293))
+- When an upstream body is unexpectedly closed, return Httpincomplete ([#290](https://github.com/fastly/Viceroy/pull/290))
+- Error::ValueAbsent should map to FastlyStatus::None, not Inval ([#291](https://github.com/fastly/Viceroy/pull/280))
+- Switch default log level to "error", add -v to run ([#288](https://github.com/fastly/Viceroy/pull/288))
+- Update rustls and various dependencies ([#278](https://github.com/fastly/Viceroy/pull/278))
+- Change default port from 7878 to 7676, which is what the Fastly CLI defaults to ([#287](https://github.com/fastly/Viceroy/pull/287))
+
+## 0.6.0 (2023-07-12)
+
+- ⏱️ Add cross-platform ability to profile guest code in run mode ([#280](https://github.com/fastly/Viceroy/pull/280))
+- pin to hyper 0.14.26 for the time being ([#285](https://github.com/fastly/Viceroy/pull/285))
+- 😯 Add support for the new secret from_bytes extension. ([#283](https://github.com/fastly/Viceroy/pull/283))
+- feat: Add a stub for downstream_client_h2_fingerprint ([#277](https://github.com/fastly/Viceroy/pull/277))
+- Fill downstream_client_request_id in ([#282](https://github.com/fastly/Viceroy/pull/282))
+- Bump to wasmtime-10.0.0 ([#279](https://github.com/fastly/Viceroy/pull/279))
+- Add a stub for downstream_client_request_id ([#276](https://github.com/fastly/Viceroy/pull/276))
+-  Fix various warnings ([#271](https://github.com/fastly/Viceroy/pull/271))
+- ⛽ -> ⏲️ Switch from fuel to epoch interruptions. ([#273](https://github.com/fastly/Viceroy/pull/273))
+- Bump wasmtime dependencies to 9.0.1 ([#272](https://github.com/fastly/Viceroy/pull/272))
+- ⏩ none should not be defined in cache_override_tag witx ([#269](https://github.com/fastly/Viceroy/pull/269))
+- in single run mode, keep the response receiver alive during execution ([#270](https://github.com/fastly/Viceroy/pull/270))
+- Return appropriate exit code in run-mode, rather than just 0 or 1 ([#224](https://github.com/fastly/Viceroy/pull/224))
+
+## 0.5.1 (2023-05-17)
+
+-  Update crates and add http_keepalive_mode_set ([#266](https://github.com/fastly/Viceroy/pull/266))
+
+## 0.5.0 (2023-05-11)
+
+- 🚧 Add stubs for Cache API primitives ([#260](https://github.com/fastly/Viceroy/pull/260))
+- Make is_healthy always return Unknown instead of an unsupporte…
+- 🕷️ Rework integration tests to allow parallel test execution ([#257](https://github.com/fastly/Viceroy/pull/257))
+- Add KVStore async lookup ([#253](https://github.com/fastly/Viceroy/pull/253))
+- Update to Wasmtime 8 ([#251](https://github.com/fastly/Viceroy/pull/251))
+- Add documentation explaining how to run rust unit tests w/ viceroy ([#242](https://github.com/fastly/Viceroy/pull/242))
+
+## 0.4.5 (2023-04-13)
+-  Remove validation on config store and dictionary names ([#248](https://github.com/fastly/Viceroy/pull/248))
+
+## 0.4.4 (2023-04-11)
+- feat: Allow local KV Stores to be defined using `[local_server.kv_stores]` ([#245](https://github.com/fastly/Viceroy/pull/245))
+
+## 0.4.3 (2023-04-04)
+- Add the `fastly_backend` module to the wiggle abi ([#243](https://github.com/fastly/Viceroy/pull/243))
+
 ## 0.4.2 (2023-03-30)
 - Allow config-stores to be defined using `[local_server.config_stores]` ([#240](https://github.com/fastly/Viceroy/pull/240))
 

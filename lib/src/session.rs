@@ -3,7 +3,7 @@
 mod async_item;
 mod downstream;
 
-pub use async_item::AsyncItem;
+pub use async_item::{AsyncItem, PeekableTask, PendingKvTask};
 
 use {
     self::downstream::DownstreamResponse,
@@ -15,11 +15,11 @@ use {
         object_store::{ObjectKey, ObjectStoreError, ObjectStoreKey, ObjectStores},
         secret_store::{SecretLookup, SecretStores},
         streaming_body::StreamingBody,
-        upstream::{PendingRequest, SelectTarget, TlsConfig},
+        upstream::{SelectTarget, TlsConfig},
         wiggle_abi::types::{
             self, BodyHandle, ContentEncodings, DictionaryHandle, EndpointHandle,
-            ObjectStoreHandle, PendingRequestHandle, RequestHandle, ResponseHandle, SecretHandle,
-            SecretStoreHandle,
+            ObjectStoreHandle, PendingKvLookupHandle, PendingRequestHandle, RequestHandle,
+            ResponseHandle, SecretHandle, SecretStoreHandle,
         },
     },
     cranelift_entity::{entity_impl, PrimaryMap},
@@ -639,6 +639,49 @@ impl Session {
         self.object_store.lookup(obj_store_key, obj_key)
     }
 
+    /// Insert a [`PendingLookup`] into the session.
+    ///
+    /// This method returns a new [`PendingKvLookupHandle`], which can then be used to access
+    /// and mutate the pending lookup.
+    pub fn insert_pending_kv_lookup(&mut self, pending: PendingKvTask) -> PendingKvLookupHandle {
+        self.async_items
+            .push(Some(AsyncItem::PendingKvLookup(pending)))
+            .into()
+    }
+
+    /// Take ownership of a [`PendingLookup`], given its [`PendingKvLookupHandle`].
+    ///
+    /// Returns a [`HandleError`] if the handle is not associated with a pending lookup in the
+    /// session.
+    pub fn take_pending_kv_lookup(
+        &mut self,
+        handle: PendingKvLookupHandle,
+    ) -> Result<PendingKvTask, HandleError> {
+        // check that this is a pending request before removing it
+        let _ = self.pending_kv_lookup(handle)?;
+
+        self.async_items
+            .get_mut(handle.into())
+            .and_then(Option::take)
+            .and_then(AsyncItem::into_pending_kv_lookup)
+            .ok_or(HandleError::InvalidPendingKvLookupHandle(handle))
+    }
+
+    /// Get a reference to a [`PendingLookup`], given its [`PendingKvLookupHandle`].
+    ///
+    /// Returns a [`HandleError`] if the handle is not associated with a lookup in the
+    /// session.
+    pub fn pending_kv_lookup(
+        &self,
+        handle: PendingKvLookupHandle,
+    ) -> Result<&PendingKvTask, HandleError> {
+        self.async_items
+            .get(handle.into())
+            .and_then(Option::as_ref)
+            .and_then(AsyncItem::as_pending_kv_lookup)
+            .ok_or(HandleError::InvalidPendingKvLookupHandle(handle))
+    }
+
     // ----- Secret Store API -----
 
     pub fn secret_store_handle(&mut self, name: &str) -> Option<SecretStoreHandle> {
@@ -654,7 +697,7 @@ impl Session {
         self.secret_stores
             .get_store(store_name)?
             .get_secret(secret_name)?;
-        Some(self.secrets_by_name.push(SecretLookup {
+        Some(self.secrets_by_name.push(SecretLookup::Standard {
             store_name: store_name.to_string(),
             secret_name: secret_name.to_string(),
         }))
@@ -662,6 +705,11 @@ impl Session {
 
     pub fn secret_lookup(&self, handle: SecretHandle) -> Option<SecretLookup> {
         self.secrets_by_name.get(handle).cloned()
+    }
+
+    pub fn add_secret(&mut self, plaintext: Vec<u8>) -> SecretHandle {
+        self.secrets_by_name
+            .push(SecretLookup::Injected { plaintext })
     }
 
     pub fn secret_stores(&self) -> &Arc<SecretStores> {
@@ -674,7 +722,10 @@ impl Session {
     ///
     /// This method returns a new [`PendingRequestHandle`], which can then be used to access
     /// and mutate the pending request.
-    pub fn insert_pending_request(&mut self, pending: PendingRequest) -> PendingRequestHandle {
+    pub fn insert_pending_request(
+        &mut self,
+        pending: PeekableTask<Response<Body>>,
+    ) -> PendingRequestHandle {
         self.async_items
             .push(Some(AsyncItem::PendingReq(pending)))
             .into()
@@ -687,7 +738,7 @@ impl Session {
     pub fn pending_request(
         &self,
         handle: PendingRequestHandle,
-    ) -> Result<&PendingRequest, HandleError> {
+    ) -> Result<&PeekableTask<Response<Body>>, HandleError> {
         self.async_items
             .get(handle.into())
             .and_then(Option::as_ref)
@@ -702,7 +753,7 @@ impl Session {
     pub fn pending_request_mut(
         &mut self,
         handle: PendingRequestHandle,
-    ) -> Result<&mut PendingRequest, HandleError> {
+    ) -> Result<&mut PeekableTask<Response<Body>>, HandleError> {
         self.async_items
             .get_mut(handle.into())
             .and_then(Option::as_mut)
@@ -717,7 +768,7 @@ impl Session {
     pub fn take_pending_request(
         &mut self,
         handle: PendingRequestHandle,
-    ) -> Result<PendingRequest, HandleError> {
+    ) -> Result<PeekableTask<Response<Body>>, HandleError> {
         // check that this is a pending request before removing it
         let _ = self.pending_request(handle)?;
 
@@ -731,7 +782,7 @@ impl Session {
     pub fn reinsert_pending_request(
         &mut self,
         handle: PendingRequestHandle,
-        pending_req: PendingRequest,
+        pending_req: PeekableTask<Response<Body>>,
     ) -> Result<(), HandleError> {
         *self
             .async_items
@@ -784,11 +835,11 @@ impl Session {
     pub fn async_item_mut(
         &mut self,
         handle: AsyncItemHandle,
-    ) -> Result<Option<&mut AsyncItem>, HandleError> {
-        self.async_items
-            .get_mut(handle)
-            .map(|ai| ai.as_mut())
-            .ok_or_else(|| HandleError::InvalidAsyncItemHandle(handle.into()))
+    ) -> Result<&mut AsyncItem, HandleError> {
+        match self.async_items.get_mut(handle).and_then(|ai| ai.as_mut()) {
+            Some(item) => Ok(item),
+            None => Err(HandleError::InvalidAsyncItemHandle(handle.into()))?,
+        }
     }
 
     pub fn take_async_item(&mut self, handle: AsyncItemHandle) -> Result<AsyncItem, HandleError> {
@@ -844,7 +895,7 @@ impl<'session> SelectedTargets<'session> {
 
 impl<'session> Drop for SelectedTargets<'session> {
     fn drop(&mut self) {
-        let targets = std::mem::replace(&mut self.targets, Vec::new());
+        let targets = std::mem::take(&mut self.targets);
         self.session.reinsert_select_targets(targets);
     }
 }
@@ -907,5 +958,17 @@ impl From<types::AsyncItemHandle> for AsyncItemHandle {
 impl From<AsyncItemHandle> for types::AsyncItemHandle {
     fn from(h: AsyncItemHandle) -> types::AsyncItemHandle {
         types::AsyncItemHandle::from(h.as_u32())
+    }
+}
+
+impl From<PendingKvLookupHandle> for AsyncItemHandle {
+    fn from(h: PendingKvLookupHandle) -> AsyncItemHandle {
+        AsyncItemHandle::from_u32(h.into())
+    }
+}
+
+impl From<AsyncItemHandle> for PendingKvLookupHandle {
+    fn from(h: AsyncItemHandle) -> PendingKvLookupHandle {
+        PendingKvLookupHandle::from(h.as_u32())
     }
 }

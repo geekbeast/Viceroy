@@ -9,6 +9,7 @@ use crate::{
 use futures::Future;
 use http::{uri, HeaderValue};
 use hyper::{client::HttpConnector, header, Client, HeaderMap, Request, Response, Uri};
+use rustls::client::ServerName;
 use std::{
     io,
     pin::Pin,
@@ -19,11 +20,9 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
-    sync::oneshot::{self, error::TryRecvError},
 };
 use tokio_rustls::{client::TlsStream, TlsConnector};
 use tracing::warn;
-use webpki::DNSNameRef;
 
 static GZIP_VALUES: [HeaderValue; 2] = [
     HeaderValue::from_static("gzip"),
@@ -42,19 +41,23 @@ pub struct TlsConfig {
 }
 
 fn setup_rustls(with_sni: bool) -> Result<rustls::ClientConfig, Error> {
-    let mut config = rustls::ClientConfig::new();
-    config.root_store = match rustls_native_certs::load_native_certs() {
-        Ok(store) => store,
-        Err((Some(store), err)) => {
-            warn!(%err, "some certificates could not be loaded");
-            store
+    let mut roots = rustls::RootCertStore::empty();
+    match rustls_native_certs::load_native_certs() {
+        Ok(certs) => {
+            for cert in certs {
+                roots.add(&rustls::Certificate(cert.0)).unwrap();
+            }
         }
-        Err((None, err)) => return Err(Error::BadCerts(err)),
-    };
-    if config.root_store.is_empty() {
+        Err(err) => return Err(Error::BadCerts(err)),
+    }
+    if roots.is_empty() {
         warn!("no CA certificates available");
     }
-    config.alpn_protocols.clear();
+
+    let mut config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
     config.enable_sni = with_sni;
     Ok(config)
 }
@@ -135,7 +138,7 @@ impl hyper::service::Service<Uri> for BackendConnector {
                     .as_deref()
                     .or_else(|| backend.uri.host())
                     .unwrap_or_default();
-                let dnsname = DNSNameRef::try_from_ascii_str(cert_host).map_err(Box::new)?;
+                let dnsname = ServerName::try_from(cert_host).map_err(Box::new)?;
 
                 let tls = connector.connect(dnsname, tcp).await.map_err(Box::new)?;
                 Ok(Connection::Https(Box::new(tls)))
@@ -272,63 +275,11 @@ pub fn send_request(
 }
 
 /// The type ultimately yielded by a `PendingRequest`.
-pub type PendingRequestResult = Result<Response<Body>, Error>;
 
 /// An asynchronous request awaiting a response.
 #[derive(Debug)]
 pub enum PendingRequest {
     // NB: we use channels rather than a `JoinHandle` in order to support the `poll` API.
-    Waiting(oneshot::Receiver<PendingRequestResult>),
-    Complete(PendingRequestResult),
-}
-
-impl PendingRequest {
-    /// Create a `PendingRequest` for the given request by spawning a Tokio task to drive sending
-    /// and receiving to completion.
-    pub fn spawn(
-        req: impl Future<Output = Result<Response<Body>, Error>> + Send + 'static,
-    ) -> Self {
-        let (sender, receiver) = oneshot::channel();
-        tokio::task::spawn(async move { sender.send(req.await) });
-        Self::Waiting(receiver)
-    }
-
-    /// Check whether a response happens to be available for this pending request.
-    ///
-    /// This function does _not_ block, nor does it require being in an `async` context.
-    pub fn poll(&mut self) {
-        match self {
-            Self::Waiting(ref mut rx) => match rx.try_recv() {
-                Err(TryRecvError::Closed) => {
-                    panic!("Pending request sender was dropped")
-                }
-                // the request is still in flight
-                Err(TryRecvError::Empty) => {}
-                Ok(res) => *self = Self::Complete(res),
-            },
-            // the request is already completed
-            Self::Complete(_) => {}
-        }
-    }
-
-    /// Block until the response is ready, and then return it.
-    pub async fn wait(mut self) -> PendingRequestResult {
-        self.await_ready().await;
-        match self {
-            Self::Complete(res) => res,
-            Self::Waiting(_) => unreachable!("PendingRequest should have completed"),
-        }
-    }
-
-    pub async fn await_ready(&mut self) {
-        if let Self::Waiting(rx) = self {
-            let res = match rx.await {
-                Err(_) => panic!("Pending request was unable to complete"),
-                Ok(res) => res,
-            };
-            *self = Self::Complete(res);
-        }
-    }
 }
 
 /// A pair of a pending request and the handle that pointed to it in the session, suitable for

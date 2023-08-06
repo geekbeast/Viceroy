@@ -1,6 +1,6 @@
 //! Guest code execution.
 
-use std::net::Ipv4Addr;
+use wasmtime::GuestProfiler;
 
 use {
     crate::{
@@ -18,11 +18,12 @@ use {
     hyper::{Request, Response},
     std::{
         collections::HashSet,
-        net::IpAddr,
+        net::{IpAddr, Ipv4Addr},
         path::{Path, PathBuf},
-        sync::atomic::AtomicU64,
+        sync::atomic::{AtomicBool, AtomicU64, Ordering},
         sync::Arc,
-        time::Instant,
+        thread::{self, JoinHandle},
+        time::{Duration, Instant},
     },
     tokio::sync::oneshot::{self, Sender},
     tracing::{event, info, info_span, Instrument, Level},
@@ -30,6 +31,7 @@ use {
     wasmtime::{Engine, InstancePre, Linker, Module, ProfilingStrategy},
 };
 
+pub const EPOCH_INTERRUPTION_PERIOD: Duration = Duration::from_micros(50);
 /// Execution context used by a [`ViceroyService`](struct.ViceroyService.html).
 ///
 /// This is all of the state needed to instantiate a module, in order to respond to an HTTP
@@ -41,6 +43,8 @@ pub struct ExecuteCtx {
     engine: Engine,
     /// An almost-linked Instance: each import function is linked, just needs a Store
     instance_pre: Arc<InstancePre<WasmCtx>>,
+    /// The module to run
+    module: Module,
     /// The backends for this execution.
     backends: Arc<Backends>,
     /// The geolocation mappings for this execution.
@@ -61,6 +65,9 @@ pub struct ExecuteCtx {
     object_store: Arc<ObjectStores>,
     /// The secret stores for this execution.
     secret_stores: Arc<SecretStores>,
+    // `Arc` for the two fields below because this struct must be `Clone`.
+    epoch_increment_thread: Option<Arc<JoinHandle<()>>>,
+    epoch_increment_stop: Arc<AtomicBool>,
 }
 
 impl ExecuteCtx {
@@ -77,9 +84,22 @@ impl ExecuteCtx {
         let module = Module::from_file(&engine, module_path)?;
         let instance_pre = linker.instantiate_pre(&module)?;
 
+        // Create the epoch-increment thread.
+
+        let epoch_increment_stop = Arc::new(AtomicBool::new(false));
+        let engine_clone = engine.clone();
+        let epoch_increment_stop_clone = epoch_increment_stop.clone();
+        let epoch_increment_thread = Some(Arc::new(thread::spawn(move || {
+            while !epoch_increment_stop_clone.load(Ordering::Relaxed) {
+                thread::sleep(EPOCH_INTERRUPTION_PERIOD);
+                engine_clone.increment_epoch();
+            }
+        })));
+
         Ok(Self {
             engine,
             instance_pre: Arc::new(instance_pre),
+            module,
             backends: Arc::new(Backends::default()),
             geolocation: Arc::new(Geolocation::default()),
             tls_config: TlsConfig::new()?,
@@ -90,6 +110,8 @@ impl ExecuteCtx {
             next_req_id: Arc::new(AtomicU64::new(0)),
             object_store: Arc::new(ObjectStores::new()),
             secret_stores: Arc::new(SecretStores::new()),
+            epoch_increment_thread,
+            epoch_increment_stop,
         })
     }
 
@@ -104,11 +126,9 @@ impl ExecuteCtx {
     }
 
     /// Set the backends for this execution context.
-    pub fn with_backends(self, backends: Backends) -> Self {
-        Self {
-            backends: Arc::new(backends),
-            ..self
-        }
+    pub fn with_backends(mut self, backends: Backends) -> Self {
+        self.backends = Arc::new(backends);
+        self
     }
 
     /// Get the geolocation mappings for this execution context.
@@ -117,11 +137,9 @@ impl ExecuteCtx {
     }
 
     /// Set the geolocation mappings for this execution context.
-    pub fn with_geolocation(self, geolocation: Geolocation) -> Self {
-        Self {
-            geolocation: Arc::new(geolocation),
-            ..self
-        }
+    pub fn with_geolocation(mut self, geolocation: Geolocation) -> Self {
+        self.geolocation = Arc::new(geolocation);
+        self
     }
 
     /// Get the dictionaries for this execution context.
@@ -130,35 +148,27 @@ impl ExecuteCtx {
     }
 
     /// Set the dictionaries for this execution context.
-    pub fn with_dictionaries(self, dictionaries: Dictionaries) -> Self {
-        Self {
-            dictionaries: Arc::new(dictionaries),
-            ..self
-        }
+    pub fn with_dictionaries(mut self, dictionaries: Dictionaries) -> Self {
+        self.dictionaries = Arc::new(dictionaries);
+        self
     }
 
     /// Set the object store for this execution context.
-    pub fn with_object_stores(self, object_store: ObjectStores) -> Self {
-        Self {
-            object_store: Arc::new(object_store),
-            ..self
-        }
+    pub fn with_object_stores(mut self, object_store: ObjectStores) -> Self {
+        self.object_store = Arc::new(object_store);
+        self
     }
 
     /// Set the secret stores for this execution context.
-    pub fn with_secret_stores(self, secret_stores: SecretStores) -> Self {
-        Self {
-            secret_stores: Arc::new(secret_stores),
-            ..self
-        }
+    pub fn with_secret_stores(mut self, secret_stores: SecretStores) -> Self {
+        self.secret_stores = Arc::new(secret_stores);
+        self
     }
 
     /// Set the path to the config for this execution context.
-    pub fn with_config_path(self, config_path: PathBuf) -> Self {
-        Self {
-            config_path: Arc::new(Some(config_path)),
-            ..self
-        }
+    pub fn with_config_path(mut self, config_path: PathBuf) -> Self {
+        self.config_path = Arc::new(Some(config_path));
+        self
     }
 
     /// Whether to treat stdout as a logging endpoint.
@@ -167,8 +177,9 @@ impl ExecuteCtx {
     }
 
     /// Set the stdout logging policy for this execution context.
-    pub fn with_log_stdout(self, log_stdout: bool) -> Self {
-        Self { log_stdout, ..self }
+    pub fn with_log_stdout(mut self, log_stdout: bool) -> Self {
+        self.log_stdout = log_stdout;
+        self
     }
 
     /// Whether to treat stderr as a logging endpoint.
@@ -177,8 +188,9 @@ impl ExecuteCtx {
     }
 
     /// Set the stderr logging policy for this execution context.
-    pub fn with_log_stderr(self, log_stderr: bool) -> Self {
-        Self { log_stderr, ..self }
+    pub fn with_log_stderr(mut self, log_stderr: bool) -> Self {
+        self.log_stderr = log_stderr;
+        self
     }
 
     /// Gets the TLS configuration
@@ -302,7 +314,7 @@ impl ExecuteCtx {
         // due to wasmtime limitations, in particular the fact that `Instance` is not `Send`.
         // However, the fact that the module itself is created within `ExecuteCtx::new`
         // means that the heavy lifting happens only once.
-        let mut store = create_store(&self, session).map_err(ExecutionError::Context)?;
+        let mut store = create_store(&self, session, None).map_err(ExecutionError::Context)?;
 
         let instance = self
             .instance_pre
@@ -347,7 +359,7 @@ impl ExecuteCtx {
 
         info!(
             "request completed using {} of WebAssembly heap",
-            bytesize::ByteSize::kib(heap_pages as u64 * 64)
+            bytesize::ByteSize::kib(heap_pages * 64)
         );
 
         info!("request completed in {:.0?}", request_duration);
@@ -355,11 +367,16 @@ impl ExecuteCtx {
         outcome
     }
 
-    pub async fn run_main(self, program_name: &str, args: &[String]) -> Result<(), anyhow::Error> {
+    pub async fn run_main(
+        self,
+        program_name: &str,
+        args: &[String],
+        guest_profile_path: Option<&PathBuf>,
+    ) -> Result<(), anyhow::Error> {
         // placeholders for request, result sender channel, and remote IP
         let req = Request::get("http://example.com/").body(Body::empty())?;
         let req_id = 0;
-        let (sender, _) = oneshot::channel();
+        let (sender, receiver) = oneshot::channel();
         let remote = Ipv4Addr::LOCALHOST.into();
 
         let session = Session::new(
@@ -376,7 +393,14 @@ impl ExecuteCtx {
             self.secret_stores.clone(),
         );
 
-        let mut store = create_store(&self, session).map_err(ExecutionError::Context)?;
+        let profiler = guest_profile_path.map(|_| {
+            GuestProfiler::new(
+                program_name,
+                EPOCH_INTERRUPTION_PERIOD,
+                vec![(program_name.to_string(), self.module.clone())],
+            )
+        });
+        let mut store = create_store(&self, session, profiler).map_err(ExecutionError::Context)?;
         store.data_mut().wasi().push_arg(program_name)?;
         for arg in args {
             store.data_mut().wasi().push_arg(arg)?;
@@ -397,11 +421,49 @@ impl ExecuteCtx {
         // Invoke the entrypoint function and collect its exit code
         let result = main_func.call_async(&mut store, ()).await;
 
+        // If we collected a profile, write it to the file
+        if let (Some(profile), Some(path)) =
+            (store.data_mut().take_guest_profiler(), guest_profile_path)
+        {
+            if let Err(e) = std::fs::File::create(&path)
+                .map_err(anyhow::Error::new)
+                .and_then(|output| profile.finish(std::io::BufWriter::new(output)))
+            {
+                event!(
+                    Level::ERROR,
+                    "failed writing profile at {}: {e:#}",
+                    path.display()
+                );
+            } else {
+                event!(
+                    Level::INFO,
+                    "\nProfile written to: {}\nView this profile at https://profiler.firefox.com/.",
+                    path.display()
+                );
+            }
+        }
+
         // Ensure the downstream response channel is closed, whether or not a response was
         // sent during execution.
         store.data_mut().close_downstream_response_sender();
 
+        // We don't do anything with any response on the receiver, but
+        // it's important to keep it alive until after the program has
+        // finished.
+        drop(receiver);
+
         result
+    }
+}
+
+impl Drop for ExecuteCtx {
+    fn drop(&mut self) {
+        if let Some(arc) = self.epoch_increment_thread.take() {
+            if let Ok(join_handle) = Arc::try_unwrap(arc) {
+                self.epoch_increment_stop.store(true, Ordering::Relaxed);
+                join_handle.join().unwrap();
+            }
+        }
     }
 }
 
@@ -414,7 +476,7 @@ fn configure_wasmtime(profiling_strategy: ProfilingStrategy) -> wasmtime::Config
     config.debug_info(false); // Keep this disabled - wasmtime will hang if enabled
     config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
     config.async_support(true);
-    config.consume_fuel(true);
+    config.epoch_interruption(true);
     config.profiler(profiling_strategy);
 
     const MB: usize = 1 << 20;
@@ -440,7 +502,13 @@ fn configure_wasmtime(profiling_strategy: ProfilingStrategy) -> wasmtime::Config
     // Maximum number of slots in the pooling allocator to keep "warm", or those
     // to keep around to possibly satisfy an affine allocation request or an
     // instantiation of a module previously instantiated within the pool.
-    pooling_allocation_config.max_unused_warm_slots(100);
+    pooling_allocation_config.max_unused_warm_slots(10);
+
+    // Use a large pool, but one smaller than the default of 1000 to avoid runnign out of virtual
+    // memory space if multiple engines are spun up in a single process. We'll likely want to move
+    // to the on-demand allocator eventually for most purposes; see
+    // https://github.com/fastly/Viceroy/issues/255
+    pooling_allocation_config.instance_count(100);
 
     config.allocation_strategy(InstanceAllocationStrategy::Pooling(
         pooling_allocation_config,

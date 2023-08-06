@@ -1,4 +1,6 @@
 (use "typenames.witx")
+(use "cache.witx")
+(use "config-store.witx")
 
 (module $fastly_abi
     (@interface func (export "init")
@@ -104,6 +106,20 @@
         ;;; must be a 16-byte array
         (param $addr_octets_out (@witx pointer (@witx char8)))
         (result $err (expected $num_bytes (error $fastly_status)))
+    )
+
+    (@interface func (export "downstream_client_h2_fingerprint")
+        (param $h2fp_out (@witx pointer (@witx char8)))
+        (param $h2fp_max_len (@witx usize))
+        (param $nwritten_out (@witx pointer (@witx usize)))
+        (result $err (expected (error $fastly_status)))
+    )
+
+    (@interface func (export "downstream_client_request_id")
+        (param $reqid_out (@witx pointer (@witx char8)))
+        (param $reqid_max_len (@witx usize))
+        (param $nwritten_out (@witx pointer (@witx usize)))
+        (result $err (expected (error $fastly_status)))
     )
 
     (@interface func (export "downstream_tls_cipher_openssl_name")
@@ -459,6 +475,13 @@
         (param $mode $framing_headers_mode)
         (result $err (expected (error $fastly_status)))
     )
+
+    ;;; Adjust the response's connection reuse mode.
+    (@interface func (export "http_keepalive_mode_set")
+        (param $h $response_handle)
+        (param $mode $http_keepalive_mode)
+        (result $err (expected (error $fastly_status)))
+    )
 )
 
 (module $fastly_dictionary
@@ -500,6 +523,19 @@
         (result $err (expected (error $fastly_status)))
     )
 
+    (@interface func (export "lookup_async")
+        (param $store $object_store_handle)
+        (param $key string)
+        (param $pending_body_handle_out (@witx pointer $pending_kv_lookup_handle))
+        (result $err (expected (error $fastly_status)))
+    )
+
+    (@interface func (export "pending_lookup_wait")
+        (param $pending_body_handle $pending_kv_lookup_handle)
+        (param $body_handle_out (@witx pointer $body_handle))
+        (result $err (expected (error $fastly_status)))
+    )
+    
     (@interface func (export "insert")
         (param $store $object_store_handle)
         (param $key string)
@@ -526,6 +562,12 @@
         (param $buf_len (@witx usize))
         (param $nwritten_out (@witx pointer (@witx usize)))
         (result $err (expected (error $fastly_status)))
+    )
+
+    (@interface func (export "from_bytes")
+        (param $buf (@witx pointer (@witx char8)))
+        (param $buf_len (@witx usize))
+        (result $err (expected $secret_handle (error $fastly_status)))
     )
 )
 

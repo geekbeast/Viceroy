@@ -69,10 +69,10 @@ fn fastly_toml_files_with_simple_backend_configurations_can_be_read() {
             [local_server]
               [local_server.backends]
                 [local_server.backends.dog]
-                url = "http://localhost:7878/dog-mocks"
+                url = "http://localhost:7676/dog-mocks"
 
                 [local_server.backends."shark.server"]
-                url = "http://localhost:7878/shark-mocks"
+                url = "http://localhost:7676/shark-mocks"
                 override_host = "somehost.com"
 
                 [local_server.backends.detective]
@@ -85,14 +85,14 @@ fn fastly_toml_files_with_simple_backend_configurations_can_be_read() {
         .backends()
         .get("dog")
         .expect("backend configurations can be accessed");
-    assert_eq!(backend.uri, "http://localhost:7878/dog-mocks");
+    assert_eq!(backend.uri, "http://localhost:7676/dog-mocks");
     assert_eq!(backend.override_host, None);
 
     let backend = config
         .backends()
         .get("shark.server")
         .expect("backend configurations can be accessed");
-    assert_eq!(backend.uri, "http://localhost:7878/shark-mocks");
+    assert_eq!(backend.uri, "http://localhost:7676/shark-mocks");
     assert_eq!(
         backend.override_host,
         Some("somehost.com".parse().expect("can parse override_host"))
@@ -191,7 +191,7 @@ fn local_server_configs_can_be_deserialized() {
         r#"
         [backends]
           [backends.dog]
-          url = "http://localhost:7878/dog-mocks"
+          url = "http://localhost:7676/dog-mocks"
         [dictionaries]
           [dictionaries.secrets]
           file = '{}'
@@ -569,56 +569,6 @@ mod json_dictionary_config_tests {
         }
     }
 
-    /// Check that dictionary definitions must include a *valid* `name` field.
-    #[test]
-    fn dictionary_configs_must_provide_a_valid_name() {
-        use DictionaryConfigError::InvalidName;
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("secrets.json");
-        let mut file = File::create(&file_path).unwrap();
-        writeln!(file, "{{}}").unwrap();
-
-        let bad_name_field = format!(
-            r#"
-            [dictionaries]
-            "1" = {{ file = '{}', format = "json" }}
-        "#,
-            file_path.to_str().unwrap()
-        );
-        match read_local_server_config(&bad_name_field) {
-            Err(InvalidDictionaryDefinition {
-                err: InvalidName(_),
-                ..
-            }) => {}
-            res => panic!("unexpected result: {:?}", res),
-        }
-    }
-
-    /// Check that config_store definitions must include a *valid* `name` field.
-    #[test]
-    fn config_store_configs_must_provide_a_valid_name() {
-        use DictionaryConfigError::InvalidName;
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("secrets.json");
-        let mut file = File::create(&file_path).unwrap();
-        writeln!(file, "{{}}").unwrap();
-
-        let bad_name_field = format!(
-            r#"
-            [config_stores]
-            "1" = {{ file = '{}', format = "json" }}
-        "#,
-            file_path.to_str().unwrap()
-        );
-        match read_local_server_config(&bad_name_field) {
-            Err(InvalidDictionaryDefinition {
-                err: InvalidName(_),
-                ..
-            }) => {}
-            res => panic!("unexpected result: {:?}", res),
-        }
-    }
-
     /// Check that file field is a string.
     #[test]
     fn dictionary_configs_must_provide_file_as_a_string() {
@@ -890,42 +840,6 @@ mod inline_toml_dictionary_config_tests {
         match read_local_server_config(&missing_contents) {
             Err(InvalidDictionaryDefinition {
                 err: MissingContents,
-                ..
-            }) => {}
-            res => panic!("unexpected result: {:?}", res),
-        }
-    }
-
-    /// Check that dictionary definitions must include a *valid* `name` field.
-    #[test]
-    fn dictionary_configs_must_provide_a_valid_name() {
-        use DictionaryConfigError::InvalidName;
-        let bad_name_field = r#"
-            [dictionaries."1"]
-            format = "inline-toml"
-            contents = { apple = "fruit", potato = "vegetable" }
-        "#;
-        match read_local_server_config(&bad_name_field) {
-            Err(InvalidDictionaryDefinition {
-                err: InvalidName(_),
-                ..
-            }) => {}
-            res => panic!("unexpected result: {:?}", res),
-        }
-    }
-
-    /// Check that config_store definitions must include a *valid* `name` field.
-    #[test]
-    fn config_store_configs_must_provide_a_valid_name() {
-        use DictionaryConfigError::InvalidName;
-        let bad_name_field = r#"
-            [config_stores."1"]
-            format = "inline-toml"
-            contents = { apple = "fruit", potato = "vegetable" }
-        "#;
-        match read_local_server_config(&bad_name_field) {
-            Err(InvalidDictionaryDefinition {
-                err: InvalidName(_),
                 ..
             }) => {}
             res => panic!("unexpected result: {:?}", res),

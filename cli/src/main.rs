@@ -15,6 +15,8 @@
 
 use std::process::ExitCode;
 
+use wasi_common::I32Exit;
+
 mod opts;
 
 use {
@@ -37,7 +39,7 @@ use {
 /// Create a new server, bind it to an address, and serve responses until an error occurs.
 pub async fn serve(serve_args: ServeArgs) -> Result<(), Error> {
     // Load the wasm module into an execution context
-    let ctx = create_execution_context(&serve_args.shared(), true).await?;
+    let ctx = create_execution_context(serve_args.shared(), true).await?;
 
     let addr = serve_args.addr();
     ViceroyService::new(ctx).serve(addr).await?;
@@ -52,15 +54,22 @@ pub async fn main() -> ExitCode {
     let cmd = opts.command.unwrap_or(Commands::Serve(opts.serve));
     match cmd {
         Commands::Run(run_args) => {
-            install_tracing_subscriber(0);
-            if let Ok(_) = run_wasm_main(run_args).await {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+            install_tracing_subscriber(run_args.shared().verbosity());
+            match run_wasm_main(run_args).await {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(e) => {
+                    // Suppress stack trace if the error is due to a
+                    // normal call to proc_exit, leading to a process
+                    // exit.
+                    if !e.is::<I32Exit>() {
+                        event!(Level::ERROR, "{}", e);
+                    }
+                    get_exit_code(e)
+                }
             }
         }
         Commands::Serve(serve_args) => {
-            install_tracing_subscriber(serve_args.verbosity());
+            install_tracing_subscriber(serve_args.shared().verbosity());
             match {
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {
@@ -84,13 +93,18 @@ pub async fn main() -> ExitCode {
 /// Execute a Wasm program in the Viceroy environment.
 pub async fn run_wasm_main(run_args: RunArgs) -> Result<(), anyhow::Error> {
     // Load the wasm module into an execution context
-    let ctx = create_execution_context(&run_args.shared(), false).await?;
+    let ctx = create_execution_context(run_args.shared(), false).await?;
     let input = run_args.shared().input();
     let program_name = match input.file_stem() {
         Some(stem) => stem.to_string_lossy(),
         None => panic!("program cannot be a directory"),
     };
-    ctx.run_main(&program_name, run_args.wasm_args()).await
+    ctx.run_main(
+        &program_name,
+        run_args.wasm_args(),
+        run_args.profile_guest(),
+    )
+    .await
 }
 
 fn install_tracing_subscriber(verbosity: u8) {
@@ -98,7 +112,7 @@ fn install_tracing_subscriber(verbosity: u8) {
     // viceroy and viceroy-lib so that they can have output in the terminal
     if env::var("RUST_LOG").ok().is_none() {
         match verbosity {
-            0 => env::set_var("RUST_LOG", "viceroy=off,viceroy-lib=off"),
+            0 => env::set_var("RUST_LOG", "viceroy=error,viceroy-lib=error"),
             1 => env::set_var("RUST_LOG", "viceroy=info,viceroy-lib=info"),
             2 => env::set_var("RUST_LOG", "viceroy=debug,viceroy-lib=debug"),
             _ => env::set_var("RUST_LOG", "viceroy=trace,viceroy-lib=trace"),
@@ -127,6 +141,37 @@ fn install_tracing_subscriber(verbosity: u8) {
         "RUST_LOG set to '{}'",
         env::var("RUST_LOG").unwrap_or_else(|_| String::from("<Could not get env>"))
     );
+}
+
+// This function is based on similar exit code logic in the wasmtime cli:
+// https://github.com/bytecodealliance/wasmtime/blob/cc768f/src/commands/run.rs#L214-L246
+fn get_exit_code(e: anyhow::Error) -> ExitCode {
+    // If we exited with a specific WASI exit code, forward that to
+    // the process
+    if let Some(exit) = e.downcast_ref::<I32Exit>() {
+        // On Windows, exit status 3 indicates an abort (see below),
+        // so return 1 indicating a non-zero status to avoid ambiguity.
+        if cfg!(windows) && exit.0 >= 3 {
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::from(exit.0 as u8);
+    }
+
+    // If the program exited because of a trap, return an error code
+    // to the outside environment indicating a more severe problem
+    // than a simple failure.
+    if e.is::<wasmtime::Trap>() {
+        if cfg!(unix) {
+            // On Unix, return the error code of an abort.
+            return ExitCode::from(128u8 + libc::SIGABRT as u8);
+        } else if cfg!(windows) {
+            // On Windows, return 3.
+            // https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/abort?view=vs-2019
+            return ExitCode::from(3u8);
+        }
+    }
+    // Otherwise just return 1
+    ExitCode::FAILURE
 }
 
 pub enum Stdio {

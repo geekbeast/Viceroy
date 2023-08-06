@@ -1,5 +1,7 @@
 //! Error types.
 
+use std::error::Error as StdError;
+use std::io;
 use {crate::wiggle_abi::types::FastlyStatus, url::Url, wiggle::GuestError};
 
 #[derive(Debug, thiserror::Error)]
@@ -145,14 +147,24 @@ impl Error {
     pub fn to_fastly_status(&self) -> FastlyStatus {
         match self {
             Error::BufferLengthError { .. } => FastlyStatus::Buflen,
-            Error::InvalidArgument | Error::ValueAbsent => FastlyStatus::Inval,
+            Error::InvalidArgument => FastlyStatus::Inval,
+            Error::ValueAbsent => FastlyStatus::None,
             Error::Unsupported { .. } => FastlyStatus::Unsupported,
             Error::HandleError { .. } => FastlyStatus::Badf,
             Error::InvalidStatusCode { .. } => FastlyStatus::Inval,
+            Error::UnknownBackend(_) => FastlyStatus::Inval,
             // Map specific kinds of `hyper::Error` into their respective error codes.
             Error::HyperError(e) if e.is_parse() => FastlyStatus::Httpinvalid,
             Error::HyperError(e) if e.is_user() => FastlyStatus::Httpuser,
             Error::HyperError(e) if e.is_incomplete_message() => FastlyStatus::Httpincomplete,
+            Error::HyperError(e)
+                if e.source()
+                    .and_then(|e| e.downcast_ref::<io::Error>())
+                    .map(|ioe| ioe.kind())
+                    == Some(io::ErrorKind::UnexpectedEof) =>
+            {
+                FastlyStatus::Httpincomplete
+            }
             Error::HyperError(_) => FastlyStatus::Error,
             // Destructuring a GuestError is recursive, so we use a helper function:
             Error::GuestError(e) => Self::guest_error_fastly_status(e),
@@ -180,7 +192,6 @@ impl Error {
             | Error::Other(_)
             | Error::ProfilingStrategy
             | Error::StreamingChunkSend
-            | Error::UnknownBackend(_)
             | Error::Utf8Expected(_)
             | Error::BackendNameRegistryError(_)
             | Error::HttpError(_)
@@ -237,6 +248,10 @@ pub enum HandleError {
     /// A request handle was not valid.
     #[error("Invalid pending request handle: {0}")]
     InvalidPendingRequestHandle(crate::wiggle_abi::types::PendingRequestHandle),
+
+    /// A lookup handle was not valid.
+    #[error("Invalid pending KV lookup handle: {0}")]
+    InvalidPendingKvLookupHandle(crate::wiggle_abi::types::PendingKvLookupHandle),
 
     /// A dictionary handle was not valid.
     #[error("Invalid dictionary handle: {0}")]
@@ -406,9 +421,6 @@ pub enum DictionaryConfigError {
 
     #[error("definition was not provided as a TOML table")]
     InvalidEntryType,
-
-    #[error("invalid string: {0}")]
-    InvalidName(String),
 
     #[error("'name' field was not a string")]
     InvalidNameEntry,

@@ -4,8 +4,8 @@ use {
     crate::{
         config::Backend,
         error::Error,
-        session::{AsyncItem, Session, ViceroyRequestMetadata},
-        upstream::{self, PendingRequest},
+        session::{AsyncItem, PeekableTask, Session, ViceroyRequestMetadata},
+        upstream,
         wiggle_abi::{
             fastly_http_req::FastlyHttpReq,
             headers::HttpHeaders,
@@ -87,6 +87,46 @@ impl FastlyHttpReq for Session {
                 Ok(octets_bytes)
             }
         }
+    }
+
+    #[allow(unused_variables)] // FIXME JDC 2023-06-18: Remove this directive once implemented.
+    fn downstream_client_h2_fingerprint<'a>(
+        &mut self,
+        h2fp_out: &GuestPtr<'a, u8>,
+        h2fp_max_len: u32,
+        nwritten_out: &GuestPtr<u32>,
+    ) -> Result<(), Error> {
+        Err(Error::NotAvailable("Client H2 fingerprint"))
+    }
+
+    fn downstream_client_request_id(
+        &mut self,
+        reqid_out: &GuestPtr<u8>,
+        reqid_max_len: u32,
+        nwritten_out: &GuestPtr<u32>,
+    ) -> Result<(), Error> {
+        let reqid_bytes = format!("{:032x}", self.req_id()).into_bytes();
+
+        if reqid_bytes.len() > reqid_max_len as usize {
+            // Write out the number of bytes necessary to fit the value, or zero on overflow to
+            // signal an error condition.
+            nwritten_out.write(reqid_bytes.len().try_into().unwrap_or(0))?;
+            return Err(Error::BufferLengthError {
+                buf: "reqid_out",
+                len: "reqid_max_len",
+            });
+        }
+
+        let reqid_len =
+            u32::try_from(reqid_bytes.len()).expect("smaller u32::MAX means it must fit");
+
+        let mut reqid_slice = reqid_out
+            .as_array(reqid_len)
+            .as_slice_mut()?
+            .ok_or(Error::SharedMemory)?;
+        reqid_slice.copy_from_slice(&reqid_bytes);
+        nwritten_out.write(reqid_len)?;
+        Ok(())
     }
 
     #[allow(unused_variables)] // FIXME KTM 2020-06-25: Remove this directive once implemented.
@@ -534,7 +574,7 @@ impl FastlyHttpReq for Session {
         Ok(self.insert_response(resp))
     }
 
-    fn send_async<'a>(
+    async fn send_async<'a>(
         &mut self,
         req_handle: RequestHandle,
         body_handle: BodyHandle,
@@ -555,14 +595,14 @@ impl FastlyHttpReq for Session {
             .ok_or_else(|| Error::UnknownBackend(backend_name.to_owned()))?;
 
         // asynchronously send the request
-        let pending_req =
-            PendingRequest::spawn(upstream::send_request(req, backend, self.tls_config()));
+        let task =
+            PeekableTask::spawn(upstream::send_request(req, backend, self.tls_config())).await;
 
-        // return a handle to the pending request
-        Ok(self.insert_pending_request(pending_req))
+        // return a handle to the pending task
+        Ok(self.insert_pending_request(task))
     }
 
-    fn send_async_streaming<'a>(
+    async fn send_async_streaming<'a>(
         &mut self,
         req_handle: RequestHandle,
         body_handle: BodyHandle,
@@ -583,44 +623,40 @@ impl FastlyHttpReq for Session {
             .ok_or_else(|| Error::UnknownBackend(backend_name.to_owned()))?;
 
         // asynchronously send the request
-        let pending_req =
-            PendingRequest::spawn(upstream::send_request(req, backend, self.tls_config()));
+        let task =
+            PeekableTask::spawn(upstream::send_request(req, backend, self.tls_config())).await;
 
-        // return a handle to the pending request
-        Ok(self.insert_pending_request(pending_req))
+        // return a handle to the pending task
+        Ok(self.insert_pending_request(task))
     }
 
     // note: The first value in the return tuple represents whether the request is done: 0 when not
     // done, 1 when done.
-    fn pending_req_poll(
+    async fn pending_req_poll(
         &mut self,
         pending_req_handle: PendingRequestHandle,
     ) -> Result<(u32, ResponseHandle, BodyHandle), Error> {
-        let mut pending_req = self.take_pending_request(pending_req_handle)?;
-        pending_req.poll();
-
-        let outcome = match pending_req {
-            PendingRequest::Waiting(_) => {
-                // Make sure to reinsert if pending
-                self.reinsert_pending_request(pending_req_handle, pending_req)?;
-                (0, INVALID_REQUEST_HANDLE.into(), INVALID_BODY_HANDLE.into())
-            }
-            PendingRequest::Complete(resp) => {
-                // the request is done so we will not reinsert it into the map
-                let (resp_handle, resp_body_handle) = self.insert_response(resp?);
-                (1, resp_handle, resp_body_handle)
-            }
-        };
-
-        Ok(outcome)
+        if self.async_item_mut(pending_req_handle.into())?.is_ready() {
+            let resp = self
+                .take_pending_request(pending_req_handle)?
+                .recv()
+                .await?;
+            let (resp_handle, resp_body_handle) = self.insert_response(resp);
+            Ok((1, resp_handle, resp_body_handle))
+        } else {
+            Ok((0, INVALID_REQUEST_HANDLE.into(), INVALID_BODY_HANDLE.into()))
+        }
     }
 
     async fn pending_req_wait(
         &mut self,
         pending_req_handle: PendingRequestHandle,
     ) -> Result<(ResponseHandle, BodyHandle), Error> {
-        let pending_req = self.take_pending_request(pending_req_handle)?;
-        Ok(self.insert_response(pending_req.wait().await?))
+        let pending_req = self
+            .take_pending_request(pending_req_handle)?
+            .recv()
+            .await?;
+        Ok(self.insert_response(pending_req))
     }
 
     // First element of return tuple is the "done index"
@@ -650,14 +686,12 @@ impl FastlyHttpReq for Session {
         )?;
 
         let outcome = match item {
-            AsyncItem::PendingReq(res) => match res {
-                PendingRequest::Complete(resp) => match resp {
-                    Ok(resp) => {
-                        let (resp_handle, body_handle) = self.insert_response(resp);
+            AsyncItem::PendingReq(task) => match task {
+                PeekableTask::Complete(res) => match res {
+                    Ok(res) => {
+                        let (resp_handle, body_handle) = self.insert_response(res);
                         (done_index, resp_handle, body_handle)
                     }
-                    // Unfortunately, the ABI provides no means of returning error information
-                    // from completed `select`.
                     Err(_) => (
                         done_index,
                         INVALID_RESPONSE_HANDLE.into(),
