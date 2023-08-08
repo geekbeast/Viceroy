@@ -634,6 +634,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffusers"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b2bdbdfda893eba353877c438a3b3f2023b97416fc3869967734e4d988fd62e"
+dependencies = [
+ "anyhow",
+ "regex",
+ "tch",
+ "thiserror",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2826,6 +2838,7 @@ dependencies = [
  "futures",
  "hyper",
  "itertools",
+ "rust-bert",
  "serde_json",
  "tokio",
  "tracing",
@@ -3253,6 +3266,7 @@ version = "8.0.0"
 dependencies = [
  "anyhow",
  "dashmap",
+ "diffusers",
  "openvino",
  "rust-bert",
  "serde",

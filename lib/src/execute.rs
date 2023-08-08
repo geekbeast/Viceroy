@@ -2,8 +2,11 @@
 
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
-use rust_bert::pipelines::conversation::{ConversationManager, ConversationModel};
+use rust_bert::gpt2::{Gpt2ConfigResources, Gpt2MergesResources, Gpt2ModelResources, Gpt2VocabResources};
+use rust_bert::pipelines::conversation::{ConversationConfig, ConversationManager, ConversationModel};
 use rust_bert::pipelines::question_answering::QuestionAnsweringModel;
+use rust_bert::resources::RemoteResource;
+use tokio::task;
 
 use {
     crate::{
@@ -71,7 +74,7 @@ pub struct ExecuteCtx {
 
 impl ExecuteCtx {
     /// Create a new execution context, given the path to a module and a set of experimental wasi modules.
-    pub fn new(
+    pub async fn new(
         module_path: impl AsRef<Path>,
         profiling_strategy: ProfilingStrategy,
         wasi_modules: HashSet<ExperimentalModule>,
@@ -82,7 +85,24 @@ impl ExecuteCtx {
         link_host_functions(&mut linker, &wasi_modules)?;
         let module = Module::from_file(&engine, module_path)?;
         let instance_pre = linker.instantiate_pre(&module)?;
-
+        let cc = ConversationConfig {
+            // model_resource: Box::new(RemoteResource::from_pretrained(
+            //     Gpt2ModelResources::GPT2_LARGE,
+            // )),
+            // config_resource: Box::new(RemoteResource::from_pretrained(
+            //     Gpt2ConfigResources::GPT2_LARGE,
+            // )),
+            // vocab_resource: Box::new(RemoteResource::from_pretrained(
+            //     Gpt2VocabResources::GPT2_LARGE,
+            // )),
+            // merges_resource: Some(Box::new(RemoteResource::from_pretrained(
+            //     Gpt2MergesResources::GPT2_LARGE,
+            // ))),
+            ..Default::default()
+        };
+        let qam = task::spawn_blocking(move || { let model = Arc::new(Mutex::new(QuestionAnsweringModel::new(Default::default()).unwrap())); model }).await.expect("");
+        let c_mgr = task::spawn_blocking(move || { let c_mgr = Arc::new(Mutex::new(ConversationManager::new())); c_mgr} ).await.expect("");
+        let c_model = task::spawn_blocking(move || { let cm = Arc::new(Mutex::new(ConversationModel::new(cc).unwrap())); cm } ).await.expect("");
         Ok(Self {
             engine,
             instance_pre: Arc::new(instance_pre),
@@ -96,9 +116,9 @@ impl ExecuteCtx {
             next_req_id: Arc::new(AtomicU64::new(0)),
             object_store: Arc::new(ObjectStores::new()),
             secret_stores: Arc::new(SecretStores::new()),
-            qam: Arc::new(Mutex::new(QuestionAnsweringModel::new(Default::default()).unwrap())),
-            c_mgr: Arc::new(Mutex::new(ConversationManager::new())),
-            c_model: Arc::new(Mutex::new(ConversationModel::new(Default::default()).unwrap())),
+            qam,
+            c_mgr,
+            c_model,
         })
     }
 

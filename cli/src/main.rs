@@ -14,6 +14,9 @@
 #![cfg_attr(not(debug_assertions), doc(test(attr(allow(unused_variables)))))]
 
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use tokio::task;
+use rust_bert::pipelines::question_answering::QuestionAnsweringModel;
 
 mod opts;
 
@@ -190,7 +193,7 @@ async fn create_execution_context(
     check_backends: bool,
 ) -> Result<ExecuteCtx, anyhow::Error> {
     let input = args.input();
-    let mut ctx = ExecuteCtx::new(input, args.profiling_strategy(), args.wasi_modules())?
+    let mut ctx = ExecuteCtx::new(input, args.profiling_strategy(), args.wasi_modules()).await?
         .with_log_stderr(args.log_stderr())
         .with_log_stdout(args.log_stdout());
 

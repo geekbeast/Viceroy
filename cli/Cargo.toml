@@ -41,6 +41,7 @@ tracing-futures = "^0.2.5"
 tracing-subscriber = { version = "^0.3.16", features = ["env-filter", "fmt"] }
 viceroy-lib = { path = "../lib", version = "^0.4.3" }
 wat = "^1.0.38"
+rust-bert = "0.20.0"
 
 [dev-dependencies]
 anyhow = "^1.0.31"
