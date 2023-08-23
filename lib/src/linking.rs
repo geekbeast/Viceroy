@@ -1,5 +1,6 @@
 //! Linking and name resolution.
 
+use wasmtime_wasi_nn::InMemoryRegistry;
 use {
     crate::{
         config::ExperimentalModule, execute::ExecuteCtx, logging::LogEndpoint, session::Session,
@@ -12,6 +13,7 @@ use {
     wasmtime_wasi::WasiCtxBuilder,
     wasmtime_wasi_nn::WasiNnCtx,
 };
+use crate::config::Backends;
 
 #[derive(Default)]
 pub struct Limiter {
@@ -88,8 +90,13 @@ pub(crate) fn create_store(
     session: Session,
     guest_profiler: Option<GuestProfiler>,
 ) -> Result<Store<WasmCtx>, anyhow::Error> {
+    // let backends =     vec![
+    //     (BackendKind::OpenVINO, Box::new(OpenvinoBackend::default())),
+    //     (BackendKind::KServe, Box::new(KServeBackend::default())),
+    // ];
+    let a = wasmtime_wasi_nn::preload(&[]).unwrap();
     let wasi = make_wasi_ctx(ctx, &session).context("creating Wasi context")?;
-    let wasi_nn = WasiNnCtx::new().unwrap();
+    let wasi_nn = WasiNnCtx::new(a.0, a.1);
     let wasm_ctx = WasmCtx {
         wasi,
         wasi_nn,
@@ -97,6 +104,7 @@ pub(crate) fn create_store(
         guest_profiler: guest_profiler.map(Box::new),
         limiter: Limiter::default(),
     };
+
     let mut store = Store::new(ctx.engine(), wasm_ctx);
     store.set_epoch_deadline(1);
     store.epoch_deadline_callback(|mut store| {
@@ -112,16 +120,16 @@ pub(crate) fn create_store(
 
 /// Constructs a fresh `WasiCtx` for _each_ incoming request.
 fn make_wasi_ctx(ctx: &ExecuteCtx, session: &Session) -> Result<WasiCtx, anyhow::Error> {
-    let mut wasi_ctx = WasiCtxBuilder::new();
+    let mut wasi_ctx = &mut WasiCtxBuilder::new();
 
     // Viceroy provides a subset of the `FASTLY_*` environment variables that the production
     // Compute@Edge platform provides:
 
     wasi_ctx = wasi_ctx
         // signal that we're in a local testing environment
-        .env("FASTLY_HOSTNAME", "localhost")?
+        .env("FASTLY_HOSTNAME", "localhost").unwrap()
         // request IDs start at 0 and increment, rather than being UUIDs, for ease of testing
-        .env("FASTLY_TRACE_ID", &format!("{:032x}", session.req_id()))?;
+        .env("FASTLY_TRACE_ID", &format!("{:032x}", session.req_id())).unwrap();
 
     if ctx.log_stdout() {
         wasi_ctx = wasi_ctx.stdout(Box::new(WritePipe::new(LogEndpoint::new(b"stdout"))));
@@ -144,8 +152,9 @@ pub fn link_host_functions(
     experimental_modules
         .iter()
         .try_for_each(|experimental_module| match experimental_module {
-            ExperimentalModule::WasiNn => wasmtime_wasi_nn::add_to_linker(linker, WasmCtx::wasi_nn),
+            ExperimentalModule::WasiNn => wasmtime_wasi_nn::witx::add_to_linker(linker, WasmCtx::wasi_nn),
         })?;
+
     wasmtime_wasi::add_to_linker(linker, WasmCtx::wasi)?;
     wiggle_abi::fastly_abi::add_to_linker(linker, WasmCtx::session)?;
     wiggle_abi::fastly_cache::add_to_linker(linker, WasmCtx::session)?;
