@@ -94,7 +94,8 @@ pub(crate) fn create_store(
     //     (BackendKind::OpenVINO, Box::new(OpenvinoBackend::default())),
     //     (BackendKind::KServe, Box::new(KServeBackend::default())),
     // ];
-    let a = wasmtime_wasi_nn::preload(&[]).unwrap();
+
+    let a = wasmtime_wasi_nn::witx::kserve_registry().unwrap();
     let wasi = make_wasi_ctx(ctx, &session).context("creating Wasi context")?;
     let wasi_nn = WasiNnCtx::new(a.0, a.1);
     let wasm_ctx = WasmCtx {
